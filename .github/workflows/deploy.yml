@@ -56,3 +56,4 @@ jobs:
           port: 22
           script: |
             sudo docker compose -f /var/www/crosspace/docker-compose.yml up -d --build --force-recreate --no-deps client
+            sudo docker compose -f /var/www/crosspace/docker-compose.yml up -d --force-recreate --no-deps nginx
