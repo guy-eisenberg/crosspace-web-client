@@ -4,7 +4,10 @@ let socket: Socket | null = null;
 
 export function io() {
   if (!socket)
-    socket = _io(process.env.NEXT_PUBLIC_API_URL, { withCredentials: true });
+    socket = _io(process.env.NEXT_PUBLIC_API_URL, {
+      withCredentials: true,
+      path: "/api/socket.io",
+    });
 
   return socket;
 }
