@@ -58,7 +58,10 @@ export default function ConnectionsProvider({
 
   const processMessages = useCallback((message: MessageEvent) => {
     if (message.data instanceof ArrayBuffer) {
-      currentBuffer.push(message.data);
+      const index = new DataView(message.data.slice(0, 4)).getUint32(0);
+      const data = message.data.slice(4);
+
+      currentBuffer[index] = data;
       setProgress(
         (currentBuffer.length / Math.floor(currentTransferSize / CHUNK_SIZE)) *
           100,
@@ -122,7 +125,9 @@ export default function ConnectionsProvider({
 
         const connection = new RTCPeerConnection({ ...RTC_CONFIG, iceServers });
 
-        const dataChannel = connection.createDataChannel("file-transfer");
+        const dataChannel = connection.createDataChannel("file-transfer", {
+          ordered: false,
+        });
         dataChannel.onopen = () => onDataChannelOpen(targetDevice);
         dataChannel.onmessage = processMessages;
         dataChannel.bufferedAmountLowThreshold = LOW_BUFFER_SIZE;
@@ -261,8 +266,6 @@ export default function ConnectionsProvider({
         await connections[originDevice].connection.setRemoteDescription(
           new RTCSessionDescription(answer),
         );
-
-        console.log(connections);
       } catch (err) {
         console.log(err);
       }
@@ -333,8 +336,10 @@ export default function ConnectionsProvider({
       metadata: FileMetadata,
       blob: Blob,
       dataChannel: RTCDataChannel,
-      offset = 0,
+      index = 0,
     ) {
+      const offset = index * CHUNK_SIZE;
+
       const reader = new FileReader();
       const slice = blob.slice(offset, offset + CHUNK_SIZE);
 
@@ -342,10 +347,8 @@ export default function ConnectionsProvider({
         const chunk = e.target?.result;
 
         if (chunk) {
-          const newOffset = offset + (chunk as ArrayBuffer).byteLength;
-
-          if (newOffset < blob.size) {
-            if (offset === 0) {
+          if (offset < blob.size) {
+            if (index === 0) {
               dataChannel.send(
                 JSON.stringify({
                   event: "start",
@@ -358,12 +361,26 @@ export default function ConnectionsProvider({
             }
 
             if (dataChannel.bufferedAmount < MAX_BUFFER_SIZE) {
-              dataChannel.send(chunk as string);
-              readAndSendChunk(metadata, blob, dataChannel, newOffset);
+              const originalView = new Uint8Array(chunk as ArrayBuffer);
+
+              const newData = new ArrayBuffer(4);
+              const newDataView = new DataView(newData, 0);
+
+              newDataView.setUint32(0, index);
+
+              const newBuffer = new ArrayBuffer(
+                (chunk as ArrayBuffer).byteLength + 4,
+              );
+              const newBufferView = new Uint8Array(newBuffer);
+              newBufferView.set(new Uint8Array(newData), 0);
+              newBufferView.set(originalView, 4);
+
+              dataChannel.send(newBuffer);
+              readAndSendChunk(metadata, blob, dataChannel, index + 1);
               dataChannel.onbufferedamountlow = null;
             } else {
               dataChannel.onbufferedamountlow = () =>
-                readAndSendChunk(metadata, blob, dataChannel, offset);
+                readAndSendChunk(metadata, blob, dataChannel, index);
             }
           } else {
             dataChannel.send(
@@ -417,9 +434,9 @@ export function useConnections() {
   return useContext(ConnectionsContext);
 }
 
-const CHUNK_SIZE = 1024 * 16;
-const MAX_BUFFER_SIZE = 1024 * 1024 * 4;
-const LOW_BUFFER_SIZE = 1025 * 512;
+const CHUNK_SIZE = 1024 * 16; // 16KB
+const MAX_BUFFER_SIZE = 1024 * 1024 * 4; // 4MB
+const LOW_BUFFER_SIZE = 1025 * 512; // 512KB
 
 const RTC_CONFIG: RTCConfiguration = {
   iceTransportPolicy: "all",
