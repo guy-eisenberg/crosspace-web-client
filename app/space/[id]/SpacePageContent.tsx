@@ -1,16 +1,20 @@
 "use client";
 
 import ConnectQRCode from "@/app/components/ConnectQRCode";
+import ProgressScreen from "@/app/components/ProgressScreen";
 import { io } from "@/clients/io";
 import { useConnections } from "@/context/ConnectionsContext";
+import { useFiles } from "@/context/FilesContext";
 import type { FileMetadata } from "@/types";
 import { fileSizeLabel } from "@/utils/fileSizeLabel";
+import { cn } from "@heroui/theme";
 import { IconQrcode } from "@tabler/icons-react";
 import { useEffect, useRef, useState } from "react";
 import { v4 } from "uuid";
 
 export default function SpacePageContent({ spaceId }: { spaceId: string }) {
-  const { state, progress, connectTo } = useConnections();
+  const { addOwnedFile, deleteOwnedFile } = useFiles();
+  const { state, progress, rate, connectTo } = useConnections();
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -46,8 +50,6 @@ export default function SpacePageContent({ spaceId }: { spaceId: string }) {
         space: string;
         files: FileMetadata[];
       };
-
-      console.log(files);
 
       if (space === spaceId) setFiles(files);
     });
@@ -119,11 +121,13 @@ export default function SpacePageContent({ spaceId }: { spaceId: string }) {
         </div>
       </div>
       {state === "transfer" && (
-        <progress
-          className="progress progress-primary w-56"
-          value={progress}
-          max="100"
-        ></progress>
+        <ProgressScreen
+          className={cn(
+            state === "transfer" ? "opacity-100" : "-z-10 opacity-0",
+          )}
+          progress={progress}
+          rate={rate}
+        />
       )}
     </main>
   );
@@ -132,13 +136,17 @@ export default function SpacePageContent({ spaceId }: { spaceId: string }) {
     const newFilesData: FileMetadata[] = [];
 
     for (const file of files) {
+      const id = v4();
+
       newFilesData.push({
-        id: v4(),
+        id,
         name: file.name,
         type: file.type,
         size: file.size,
         url: URL.createObjectURL(file),
       });
+
+      addOwnedFile(id, file);
     }
 
     if (inputRef.current) inputRef.current.value = "";
@@ -151,6 +159,8 @@ export default function SpacePageContent({ spaceId }: { spaceId: string }) {
 
   async function onFileDelete(file: FileMetadata) {
     await io().emitWithAck("file-deleted", { space: spaceId, id: file.id });
+
+    deleteOwnedFile(file.id);
   }
 
   function requestFile(file: FileMetadata) {

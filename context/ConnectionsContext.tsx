@@ -12,6 +12,9 @@ import {
   useEffect,
   useState,
 } from "react";
+import { v4 } from "uuid";
+import { useFiles } from "./FilesContext";
+import { type FileWriter, useSW } from "./SWContext";
 
 export type RTCConnection = {
   targetDevice: string;
@@ -20,17 +23,27 @@ export type RTCConnection = {
   state: "connecting" | "connected" | "error";
 };
 
+export type RTCTransfer = {
+  id: string;
+  device: string;
+  size: number;
+  transferedBytes: number;
+  status: "ongoing" | "closed";
+};
+
 export type ConnectionsState = "connecting" | "idle" | "transfer";
 
 export type ConnectionsContextState = {
   state: ConnectionsState;
   progress: number;
+  rate: number;
   connectTo: (deviceId: string) => Promise<void>;
 };
 
 const ConnectionsContext = createContext<ConnectionsContextState>({
   state: "idle",
   progress: 0,
+  rate: 0,
   connectTo: async () => {},
 });
 
@@ -40,69 +53,197 @@ const connections: {
   [id: string]: RTCConnection;
 } = {};
 
-let currentBuffer: ArrayBuffer[] = [];
+let currentTransfer: RTCTransfer | null = null;
+let currentWriter: FileWriter | null = null;
 
-let currentTransferSize = 0;
+// let currentWriter: FileWriter;
+// let currentTransferId: string | null = null;
+// let currentTotalTransferSize = 0;
+// let currentTransferedBytes = 0;
 
 export default function ConnectionsProvider({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const { createWriteStream } = useSW();
+  const { getOwnedFile } = useFiles();
+
   const [init, setInit] = useState(false);
 
   const [state, setState] = useState<"connecting" | "idle" | "transfer">(
     "idle",
   );
+
   const [progress, setProgress] = useState(0);
+  const [rate, setRate] = useState(0);
 
-  const processMessages = useCallback((message: MessageEvent) => {
-    if (message.data instanceof ArrayBuffer) {
-      const index = new DataView(message.data.slice(0, 4)).getUint32(0);
-      const data = message.data.slice(4);
+  const finishTransfer = useCallback(() => {
+    console.log("Finishedddd");
 
-      currentBuffer[index] = data;
-      setProgress(
-        (currentBuffer.length / Math.floor(currentTransferSize / CHUNK_SIZE)) *
-          100,
-      );
-    } else {
-      const { event, id, type, name, size } = JSON.parse(message.data) as {
-        event: "start" | "done";
-        id: string;
-        type: string;
-        name: string;
-        size: number;
+    setProgress(0);
+    setRate(0);
+    setState(allConnected() ? "idle" : "connecting");
+
+    currentTransfer = null;
+  }, []);
+
+  const startTransfer = useCallback(
+    (data: {
+      transferId: string;
+      targetDevice: string;
+      metadata: Omit<FileMetadata, "url">;
+    }) => {
+      const { transferId, targetDevice, metadata } = data;
+
+      currentTransfer = {
+        id: transferId,
+        device: targetDevice,
+        size: metadata.size,
+        transferedBytes: 0,
+        status: "ongoing",
       };
 
-      if (event === "start") {
-        console.log("Starting reciving file:", id, "of size:", size);
+      setProgress(0);
+      setRate(0);
+      setState("transfer");
+    },
+    [],
+  );
 
-        currentTransferSize = size;
-        setProgress(0);
-        setState("transfer");
+  const processMessages = useCallback(
+    async (originDevice: string, message: MessageEvent) => {
+      if (message.data instanceof ArrayBuffer) {
+        if (
+          currentTransfer &&
+          currentWriter &&
+          currentTransfer.status === "ongoing"
+        ) {
+          const { data } = message;
+
+          await currentWriter.write(new Uint8Array(data));
+
+          currentTransfer.transferedBytes += data.byteLength;
+
+          if (currentTransfer.transferedBytes >= currentTransfer.size)
+            await currentWriter.close();
+        }
+      } else {
+        const { event, id, type, name, size, ...rest } = JSON.parse(
+          message.data,
+        ) as
+          | {
+              event: "start";
+              transferId: string;
+              id: string;
+              type: string;
+              name: string;
+              size: number;
+            }
+          | {
+              event: "done";
+              id: string;
+              type: string;
+              name: string;
+              size: number;
+            };
+
+        if (event === "start") {
+          const { transferId } = rest as { transferId: string };
+
+          currentWriter = createWriteStream({
+            id,
+            name,
+            size,
+            async onClose() {
+              io().emit("file-transfer-cancel", {
+                targetDevice: originDevice,
+                transferId,
+              });
+
+              finishTransfer();
+            },
+          });
+
+          startTransfer({
+            transferId,
+            targetDevice: originDevice,
+            metadata: { id, type, name, size },
+          });
+
+          console.log("Starting reciving file:", id, "of size:", size);
+        }
+
+        if (event === "done") {
+          finishTransfer();
+
+          console.log("Finished receiving file:", id, "of size:", size);
+        }
+      }
+    },
+    [createWriteStream, startTransfer, finishTransfer],
+  );
+
+  const sendMessage = useCallback(
+    (
+      targetDevice: string,
+      metadata: FileMetadata,
+      blob: Blob,
+      dataChannel: RTCDataChannel,
+      startIndex = 0,
+    ) => {
+      if (!currentTransfer) return;
+
+      let index = startIndex;
+      let offset = index * CHUNK_SIZE;
+
+      if (index === 0) {
+        dataChannel.send(
+          JSON.stringify({
+            event: "start",
+            transferId: currentTransfer.id,
+            id: metadata.id,
+            type: metadata.type,
+            name: metadata.name,
+            size: metadata.size,
+          }),
+        );
       }
 
-      if (event === "done") {
-        console.log("Finished receiving file:", id, "of size:", size);
+      while (offset < blob.size) {
+        if (dataChannel.bufferedAmount < MAX_BUFFER_SIZE) {
+          const slice = blob.slice(offset, offset + CHUNK_SIZE);
 
-        const blob = new Blob(currentBuffer, { type });
-        const url = URL.createObjectURL(blob);
+          dataChannel.onbufferedamountlow = null;
+          dataChannel.send(slice);
 
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
+          currentTransfer.transferedBytes += slice.size;
 
-        currentBuffer = [];
+          offset += CHUNK_SIZE;
+          index += 1;
+        } else {
+          dataChannel.onbufferedamountlow = () =>
+            sendMessage(targetDevice, metadata, blob, dataChannel, index);
 
-        currentTransferSize = 0;
-        setProgress(100);
-        setState(allConnected() ? "idle" : "connecting");
+          return;
+        }
       }
-    }
-  }, []);
+
+      dataChannel.send(
+        JSON.stringify({
+          event: "done",
+          id: metadata.id,
+          type: metadata.type,
+          name: metadata.name,
+          size: metadata.size,
+        }),
+      );
+
+      finishTransfer();
+      console.log("File transfer done.");
+    },
+    [finishTransfer],
+  );
 
   const onDataChannelOpen = useCallback((device: string) => {
     console.log(`Data channel from ${device} is open.`);
@@ -126,10 +267,11 @@ export default function ConnectionsProvider({
         const connection = new RTCPeerConnection({ ...RTC_CONFIG, iceServers });
 
         const dataChannel = connection.createDataChannel("file-transfer", {
-          ordered: false,
+          ordered: true,
         });
+
         dataChannel.onopen = () => onDataChannelOpen(targetDevice);
-        dataChannel.onmessage = processMessages;
+        dataChannel.onmessage = processMessages.bind(null, targetDevice);
         dataChannel.bufferedAmountLowThreshold = LOW_BUFFER_SIZE;
 
         const offer = await connection.createOffer();
@@ -161,6 +303,36 @@ export default function ConnectionsProvider({
     },
     [onDataChannelOpen, processMessages],
   );
+
+  useEffect(() => {
+    if (state === "transfer") {
+      const progressInterval = setInterval(() => {
+        if (!currentTransfer) return;
+
+        setProgress(
+          Math.floor(
+            (currentTransfer!.transferedBytes / currentTransfer!.size) * 100,
+          ),
+        );
+      }, 500);
+
+      let lastRateIntervalBytes = 0;
+      const rateInterval = setInterval(() => {
+        if (!currentTransfer) return;
+
+        const rate = currentTransfer.transferedBytes - lastRateIntervalBytes;
+
+        lastRateIntervalBytes = currentTransfer.transferedBytes;
+
+        setRate(rate);
+      }, 1000);
+
+      return () => {
+        clearInterval(progressInterval);
+        clearInterval(rateInterval);
+      };
+    }
+  }, [state]);
 
   useEffect(() => {
     init();
@@ -211,7 +383,7 @@ export default function ConnectionsProvider({
 
           dataChannel.onopen = () => onDataChannelOpen(originDevice);
 
-          dataChannel.onmessage = processMessages;
+          dataChannel.onmessage = processMessages.bind(null, originDevice);
 
           connections[originDevice] = {
             targetDevice: originDevice,
@@ -307,13 +479,11 @@ export default function ConnectionsProvider({
 
       console.log(`Device ${originDevice} requested file ${file.id}.`);
 
-      const blob = await fetch(file.url).then((r) => r.blob());
+      const blob = getOwnedFile(file.id);
 
       if (own) {
-        const url = URL.createObjectURL(blob);
-
         const a = document.createElement("a");
-        a.href = url;
+        a.href = file.url;
         a.download = file.name;
         document.body.appendChild(a);
         a.click();
@@ -325,87 +495,36 @@ export default function ConnectionsProvider({
       if (!dataChannel)
         throw new Error(`Data channel to ${originDevice} not found.`);
 
-      readAndSendChunk(file, blob, dataChannel, 0);
+      startTransfer({
+        transferId: v4(),
+        targetDevice: originDevice,
+        metadata: file,
+      });
+      sendMessage(originDevice, file, blob, dataChannel, 0);
+    });
+
+    io().on("file-transfer-cancel", async (message) => {
+      const { transferId } = message as {
+        transferId: string;
+      };
+
+      if (currentTransfer && currentTransfer.id === transferId) {
+        finishTransfer();
+      }
     });
 
     return () => {
       io().off("file-request");
+      io().off("file-transfer-cancel");
     };
-
-    async function readAndSendChunk(
-      metadata: FileMetadata,
-      blob: Blob,
-      dataChannel: RTCDataChannel,
-      index = 0,
-    ) {
-      const offset = index * CHUNK_SIZE;
-
-      const reader = new FileReader();
-      const slice = blob.slice(offset, offset + CHUNK_SIZE);
-
-      reader.onload = (e) => {
-        const chunk = e.target?.result;
-
-        if (chunk) {
-          if (offset < blob.size) {
-            if (index === 0) {
-              dataChannel.send(
-                JSON.stringify({
-                  event: "start",
-                  id: metadata.id,
-                  type: metadata.type,
-                  name: metadata.name,
-                  size: metadata.size,
-                }),
-              );
-            }
-
-            if (dataChannel.bufferedAmount < MAX_BUFFER_SIZE) {
-              const originalView = new Uint8Array(chunk as ArrayBuffer);
-
-              const newData = new ArrayBuffer(4);
-              const newDataView = new DataView(newData, 0);
-
-              newDataView.setUint32(0, index);
-
-              const newBuffer = new ArrayBuffer(
-                (chunk as ArrayBuffer).byteLength + 4,
-              );
-              const newBufferView = new Uint8Array(newBuffer);
-              newBufferView.set(new Uint8Array(newData), 0);
-              newBufferView.set(originalView, 4);
-
-              dataChannel.send(newBuffer);
-              readAndSendChunk(metadata, blob, dataChannel, index + 1);
-              dataChannel.onbufferedamountlow = null;
-            } else {
-              dataChannel.onbufferedamountlow = () =>
-                readAndSendChunk(metadata, blob, dataChannel, index);
-            }
-          } else {
-            dataChannel.send(
-              JSON.stringify({
-                event: "done",
-                id: metadata.id,
-                type: metadata.type,
-                name: metadata.name,
-                size: metadata.size,
-              }),
-            );
-            console.log("File transfer done.");
-          }
-        }
-      };
-
-      reader.readAsArrayBuffer(slice);
-    }
-  }, [init]);
+  }, [init, getOwnedFile, finishTransfer, startTransfer, sendMessage]);
 
   return (
     <ConnectionsContext.Provider
       value={{
         state,
         progress,
+        rate,
         connectTo,
       }}
     >

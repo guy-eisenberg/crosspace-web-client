@@ -1,6 +1,6 @@
-import ConnectionsProvider from "@/context/ConnectionsContext";
 import type { Metadata } from "next";
 import "./globals.css";
+import RootProviders from "./providers";
 
 export const metadata: Metadata = {
   title: "Crosspace",
@@ -29,7 +29,7 @@ export default function RootLayout({
   return (
     <html className="h-full" lang="en" suppressHydrationWarning>
       <body className="h-full">
-        <ConnectionsProvider>{children}</ConnectionsProvider>
+        <RootProviders>{children}</RootProviders>
       </body>
     </html>
   );
