@@ -46,12 +46,37 @@ function onMessage(event) {
 
       const url = `${self.registration.scope}file/${name}?id=${id}`;
 
+      const stream = new ReadableStream({
+        start(controller) {
+          port.postMessage({ subject: "start" });
+
+          port.onmessage = (event) => {
+            const { data } = event;
+
+            if (typeof data === "string") {
+              if (data === "close") {
+                filesMap.delete(id);
+
+                return controller.close();
+              }
+            } else if (data instanceof Uint8Array)
+              return controller.enqueue(data);
+          };
+        },
+        cancel: () => {
+          filesMap.delete(id);
+
+          port.postMessage({ subject: "close" });
+        },
+      });
+
       filesMap.set(id, {
         id,
         url,
         name,
         size,
         port,
+        stream,
       });
 
       port.postMessage({ subject: "download-url", url });
@@ -74,31 +99,7 @@ function onFetch(event) {
     const file = filesMap.get(id);
     if (!file) return null;
 
-    const port = file.port;
-
-    const stream = new ReadableStream({
-      start(controller) {
-        port.onmessage = (event) => {
-          const { data } = event;
-
-          if (typeof data === "string") {
-            if (data === "close") {
-              filesMap.delete(id);
-
-              return controller.close();
-            }
-          } else if (data instanceof Uint8Array)
-            return controller.enqueue(data);
-        };
-      },
-      cancel: () => {
-        filesMap.delete(id);
-
-        port.postMessage({ subject: "close" });
-      },
-    });
-
-    const response = new Response(stream, {
+    const response = new Response(file.stream, {
       headers: {
         "Content-Type": `${file.type}; charset=utf-8`,
         "Content-Disposition":

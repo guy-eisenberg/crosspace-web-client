@@ -26,7 +26,7 @@ export type RTCConnection = {
 export type RTCTransfer = {
   id: string;
   device: string;
-  size: number;
+  file: Omit<FileMetadata, "url">;
   transferedBytes: number;
   status: "ongoing" | "closed";
 };
@@ -97,7 +97,7 @@ export default function ConnectionsProvider({
       currentTransfer = {
         id: transferId,
         device: targetDevice,
-        size: metadata.size,
+        file: metadata,
         transferedBytes: 0,
         status: "ongoing",
       };
@@ -119,19 +119,19 @@ export default function ConnectionsProvider({
         ) {
           const { data } = message;
 
-          await currentWriter.write(new Uint8Array(data));
+          currentWriter.write(new Uint8Array(data));
 
           currentTransfer.transferedBytes += data.byteLength;
 
-          if (currentTransfer.transferedBytes >= currentTransfer.size) {
+          if (currentTransfer.transferedBytes >= currentTransfer.file.size) {
             console.log(
               "Finished transfer:",
               currentTransfer.id,
               "of size:",
-              currentTransfer.size,
+              currentTransfer.file.size,
             );
 
-            await currentWriter.close();
+            currentWriter.close();
             currentWriter = null;
 
             finishTransfer();
@@ -152,7 +152,7 @@ export default function ConnectionsProvider({
         if (event === "start") {
           const { transferId } = rest as { transferId: string };
 
-          currentWriter = createWriteStream({
+          currentWriter = await createWriteStream({
             id,
             name,
             type,
@@ -173,6 +173,11 @@ export default function ConnectionsProvider({
             metadata: { id, type, name, size },
           });
 
+          io().emit("file-transfer-start", {
+            targetDevice: originDevice,
+            transferId,
+          });
+
           console.log("Starting reciving file:", id, "of size:", size);
         }
       }
@@ -180,10 +185,10 @@ export default function ConnectionsProvider({
     [createWriteStream, startTransfer, finishTransfer],
   );
 
-  const sendMessage = useCallback(
+  const sendFileData = useCallback(
     (
       targetDevice: string,
-      metadata: FileMetadata,
+      metadata: Omit<FileMetadata, "url">,
       blob: Blob,
       dataChannel: RTCDataChannel,
       startIndex = 0,
@@ -192,19 +197,6 @@ export default function ConnectionsProvider({
 
       let index = startIndex;
       let offset = index * CHUNK_SIZE;
-
-      if (index === 0) {
-        dataChannel.send(
-          JSON.stringify({
-            event: "start",
-            transferId: currentTransfer.id,
-            id: metadata.id,
-            type: metadata.type,
-            name: metadata.name,
-            size: metadata.size,
-          }),
-        );
-      }
 
       while (offset < blob.size) {
         if (dataChannel.bufferedAmount < MAX_BUFFER_SIZE) {
@@ -219,21 +211,11 @@ export default function ConnectionsProvider({
           index += 1;
         } else {
           dataChannel.onbufferedamountlow = () =>
-            sendMessage(targetDevice, metadata, blob, dataChannel, index);
+            sendFileData(targetDevice, metadata, blob, dataChannel, index);
 
           return;
         }
       }
-
-      // dataChannel.send(
-      //   JSON.stringify({
-      //     event: "done",
-      //     id: metadata.id,
-      //     type: metadata.type,
-      //     name: metadata.name,
-      //     size: metadata.size,
-      //   }),
-      // );
 
       finishTransfer();
       console.log("File transfer done.");
@@ -307,7 +289,8 @@ export default function ConnectionsProvider({
 
         setProgress(
           Math.floor(
-            (currentTransfer!.transferedBytes / currentTransfer!.size) * 100,
+            (currentTransfer!.transferedBytes / currentTransfer!.file.size) *
+              100,
           ),
         );
       }, 500);
@@ -475,8 +458,6 @@ export default function ConnectionsProvider({
 
       console.log(`Device ${originDevice} requested file ${file.id}.`);
 
-      const blob = getOwnedFile(file.id);
-
       if (own) {
         const a = document.createElement("a");
         a.href = file.url;
@@ -496,7 +477,38 @@ export default function ConnectionsProvider({
         targetDevice: originDevice,
         metadata: file,
       });
-      sendMessage(originDevice, file, blob, dataChannel, 0);
+
+      dataChannel.send(
+        JSON.stringify({
+          event: "start",
+          transferId: currentTransfer!.id,
+          id: file.id,
+          type: file.type,
+          name: file.name,
+          size: file.size,
+        }),
+      );
+    });
+
+    io().on("file-transfer-start", async (message) => {
+      const { transferId } = message as { transferId: string };
+
+      if (currentTransfer && currentTransfer.id === transferId) {
+        const dataChannel = connections[currentTransfer.device].dataChannel;
+        if (!dataChannel)
+          throw new Error(
+            `Data channel to ${currentTransfer.device} not found.`,
+          );
+
+        const blob = getOwnedFile(currentTransfer.file.id);
+        sendFileData(
+          currentTransfer.device,
+          currentTransfer.file,
+          blob,
+          dataChannel,
+          0,
+        );
+      }
     });
 
     io().on("file-transfer-cancel", async (message) => {
@@ -513,7 +525,7 @@ export default function ConnectionsProvider({
       io().off("file-request");
       io().off("file-transfer-cancel");
     };
-  }, [init, getOwnedFile, finishTransfer, startTransfer, sendMessage]);
+  }, [init, getOwnedFile, finishTransfer, startTransfer, sendFileData]);
 
   return (
     <ConnectionsContext.Provider

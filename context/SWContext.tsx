@@ -10,8 +10,8 @@ import {
 } from "react";
 
 export type FileWriter = {
-  write: (data: Uint8Array) => Promise<void>;
-  close: () => Promise<void>;
+  write: (data: Uint8Array) => void;
+  close: () => void;
 };
 
 const SWContext = createContext<{
@@ -21,10 +21,7 @@ const SWContext = createContext<{
     type: string;
     size: number;
     onClose: () => Promise<void>;
-  }) => {
-    write: (data: Uint8Array) => Promise<void>;
-    close: () => Promise<void>;
-  };
+  }) => Promise<FileWriter>;
 }>({
   createWriteStream: (() => {}) as any,
 });
@@ -44,53 +41,59 @@ export default function SWProvider({
       size: number;
       onClose: () => Promise<void>;
     }): ReturnType<ContextType<typeof SWContext>["createWriteStream"]> => {
-      const { id, name, type, size } = file;
+      return new Promise((res) => {
+        const { id, name, type, size } = file;
 
-      const messageChannel = new MessageChannel();
-      messageChannel.port1.onmessage = (event) => {
-        const message = event.data as
-          | {
-              subject: "download-url";
-              url: string;
-            }
-          | {
-              subject: "close";
-            };
+        const messageChannel = new MessageChannel();
+        messageChannel.port1.onmessage = (event) => {
+          const message = event.data as
+            | {
+                subject: "download-url";
+                url: string;
+              }
+            | { subject: "start" }
+            | {
+                subject: "close";
+              };
 
-        switch (message.subject) {
-          case "download-url":
-            const { url } = message;
+          switch (message.subject) {
+            case "download-url":
+              const { url } = message;
 
-            location.href = url;
-            break;
-          case "close":
-            file.onClose();
-        }
-      };
+              location.href = url;
 
-      if (!navigator.serviceWorker.controller)
-        throw new Error("Service worker controller not found.");
+              break;
+            case "start":
+              res({
+                write(data) {
+                  messageChannel.port1.postMessage(data);
+                },
+                close() {
+                  messageChannel.port1.postMessage("close");
+                },
+              });
+              break;
+            case "close":
+              file.onClose();
+              break;
+          }
+        };
 
-      navigator.serviceWorker.controller.postMessage(
-        {
-          subject: "new-file",
-          id,
-          name,
-          type,
-          size,
-          port: messageChannel.port2,
-        },
-        [messageChannel.port2],
-      );
+        if (!navigator.serviceWorker.controller)
+          throw new Error("Service worker controller not found.");
 
-      return {
-        async write(data) {
-          messageChannel.port1.postMessage(data);
-        },
-        async close() {
-          messageChannel.port1.postMessage("close");
-        },
-      };
+        navigator.serviceWorker.controller.postMessage(
+          {
+            subject: "new-file",
+            id,
+            name,
+            type,
+            size,
+            port: messageChannel.port2,
+          },
+          [messageChannel.port2],
+        );
+      });
     },
     [],
   );
