@@ -36,17 +36,6 @@ jobs:
           overwrite: true
           strip_components: 3
 
-      - name: Copy static files
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{vars.HOST}}
-          username: "ubuntu"
-          key: ${{secrets.KEY}}
-          port: 22
-          source: "./.next/static"
-          target: "/var/www/crosspace/client"
-          overwrite: true
-
       - name: Restart the server
         uses: appleboy/ssh-action@v1.2.2
         with:
