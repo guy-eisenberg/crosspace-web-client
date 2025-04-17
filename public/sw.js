@@ -38,6 +38,7 @@ function onMessage(event) {
       message.subject === "new-file" &&
       "id" in message &&
       "name" in message &&
+      "type" in message &&
       "size" in message &&
       "port" in message
     ) {
@@ -99,8 +100,12 @@ function onFetch(event) {
 
     const response = new Response(stream, {
       headers: {
-        "Content-Type": "application/octet-stream; charset=utf-8",
-        "Content-Disposition": "attachment; filename*=UTF-8''" + file.name,
+        "Content-Type": `${file.type}; charset=utf-8`,
+        "Content-Disposition":
+          "attachment; filename*=UTF-8''" +
+          encodeURIComponent(file.name)
+            .replace(/['()]/g, escape)
+            .replace(/\*/g, "%2A"),
         "Content-Length": file.size,
       },
     });

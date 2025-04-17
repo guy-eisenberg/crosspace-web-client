@@ -125,28 +125,31 @@ export default function ConnectionsProvider({
 
           currentTransfer.transferedBytes += data.byteLength;
 
-          if (currentTransfer.transferedBytes >= currentTransfer.size)
+          if (currentTransfer.transferedBytes >= currentTransfer.size) {
+            console.log(
+              "Finished transfer:",
+              currentTransfer.id,
+              "of size:",
+              currentTransfer.size,
+            );
+
             await currentWriter.close();
+            currentWriter = null;
+
+            finishTransfer();
+          }
         }
       } else {
         const { event, id, type, name, size, ...rest } = JSON.parse(
           message.data,
-        ) as
-          | {
-              event: "start";
-              transferId: string;
-              id: string;
-              type: string;
-              name: string;
-              size: number;
-            }
-          | {
-              event: "done";
-              id: string;
-              type: string;
-              name: string;
-              size: number;
-            };
+        ) as {
+          event: "start";
+          transferId: string;
+          id: string;
+          type: string;
+          name: string;
+          size: number;
+        };
 
         if (event === "start") {
           const { transferId } = rest as { transferId: string };
@@ -154,6 +157,7 @@ export default function ConnectionsProvider({
           currentWriter = createWriteStream({
             id,
             name,
+            type,
             size,
             async onClose() {
               io().emit("file-transfer-cancel", {
@@ -172,12 +176,6 @@ export default function ConnectionsProvider({
           });
 
           console.log("Starting reciving file:", id, "of size:", size);
-        }
-
-        if (event === "done") {
-          finishTransfer();
-
-          console.log("Finished receiving file:", id, "of size:", size);
         }
       }
     },
@@ -229,15 +227,15 @@ export default function ConnectionsProvider({
         }
       }
 
-      dataChannel.send(
-        JSON.stringify({
-          event: "done",
-          id: metadata.id,
-          type: metadata.type,
-          name: metadata.name,
-          size: metadata.size,
-        }),
-      );
+      // dataChannel.send(
+      //   JSON.stringify({
+      //     event: "done",
+      //     id: metadata.id,
+      //     type: metadata.type,
+      //     name: metadata.name,
+      //     size: metadata.size,
+      //   }),
+      // );
 
       finishTransfer();
       console.log("File transfer done.");

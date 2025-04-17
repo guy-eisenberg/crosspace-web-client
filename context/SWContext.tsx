@@ -18,6 +18,7 @@ const SWContext = createContext<{
   createWriteStream: (file: {
     id: string;
     name: string;
+    type: string;
     size: number;
     onClose: () => Promise<void>;
   }) => {
@@ -39,10 +40,11 @@ export default function SWProvider({
     (file: {
       id: string;
       name: string;
+      type: string;
       size: number;
       onClose: () => Promise<void>;
     }): ReturnType<ContextType<typeof SWContext>["createWriteStream"]> => {
-      const { id, name, size } = file;
+      const { id, name, type, size } = file;
 
       const messageChannel = new MessageChannel();
       messageChannel.port1.onmessage = (event) => {
@@ -74,6 +76,7 @@ export default function SWProvider({
           subject: "new-file",
           id,
           name,
+          type,
           size,
           port: messageChannel.port2,
         },
