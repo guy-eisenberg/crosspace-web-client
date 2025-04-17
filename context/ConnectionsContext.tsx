@@ -79,8 +79,6 @@ export default function ConnectionsProvider({
   const [rate, setRate] = useState(0);
 
   const finishTransfer = useCallback(() => {
-    console.log("Finishedddd");
-
     setProgress(0);
     setRate(0);
     setState(allConnected() ? "idle" : "connecting");
