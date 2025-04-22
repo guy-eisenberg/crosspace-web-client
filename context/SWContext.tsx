@@ -45,8 +45,15 @@ export default function SWProvider({
         const { id, name, type, size } = file;
 
         const messageChannel = new MessageChannel();
-        messageChannel.port1.onmessage = (event) => {
+
+        let keepAliveInterval: NodeJS.Timeout;
+
+        messageChannel.port1.onmessage = async (event) => {
           const message = event.data as
+            | {
+                subject: "debug";
+                data: string;
+              }
             | {
                 subject: "download-url";
                 url: string;
@@ -57,6 +64,10 @@ export default function SWProvider({
               };
 
           switch (message.subject) {
+            case "debug":
+              console.log(message.data);
+
+              break;
             case "download-url":
               const { url } = message;
 
@@ -64,6 +75,27 @@ export default function SWProvider({
 
               break;
             case "start":
+              const isSafariIOS =
+                /^((?!chrome|android).)*safari/i.test(navigator.userAgent) &&
+                /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+              // 卐 On Safari IOS ימח שמו וזכרו, wait for the user to approve the download first: 卐
+              if (isSafariIOS) {
+                await new Promise<void>((res) => {
+                  window.onfocus = () => {
+                    setTimeout(res, 1000);
+                    window.onfocus = null;
+                  };
+                });
+              }
+
+              keepAliveInterval = setInterval(() => {
+                if (!navigator.serviceWorker.controller)
+                  throw new Error("Service worker controller not found.");
+
+                navigator.serviceWorker.controller.postMessage("ping");
+              }, 5000);
+
               res({
                 write(data) {
                   messageChannel.port1.postMessage(data);
@@ -74,6 +106,8 @@ export default function SWProvider({
               });
               break;
             case "close":
+              clearInterval(keepAliveInterval);
+
               file.onClose();
               break;
           }

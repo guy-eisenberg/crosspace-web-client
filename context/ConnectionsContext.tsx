@@ -53,13 +53,9 @@ const connections: {
   [id: string]: RTCConnection;
 } = {};
 
+let currentWakeLock: WakeLockSentinel | null = null;
 let currentTransfer: RTCTransfer | null = null;
 let currentWriter: FileWriter | null = null;
-
-// let currentWriter: FileWriter;
-// let currentTransferId: string | null = null;
-// let currentTotalTransferSize = 0;
-// let currentTransferedBytes = 0;
 
 export default function ConnectionsProvider({
   children,
@@ -78,16 +74,22 @@ export default function ConnectionsProvider({
   const [progress, setProgress] = useState(0);
   const [rate, setRate] = useState(0);
 
-  const finishTransfer = useCallback(() => {
+  const finishTransfer = useCallback(async () => {
+    if (currentWakeLock)
+      try {
+        await currentWakeLock.release();
+      } catch {}
+
+    currentTransfer = null;
+    currentWakeLock = null;
+
     setProgress(0);
     setRate(0);
     setState(allConnected() ? "idle" : "connecting");
-
-    currentTransfer = null;
   }, []);
 
   const startTransfer = useCallback(
-    (data: {
+    async (data: {
       transferId: string;
       targetDevice: string;
       metadata: Omit<FileMetadata, "url">;
@@ -101,6 +103,10 @@ export default function ConnectionsProvider({
         transferedBytes: 0,
         status: "ongoing",
       };
+
+      try {
+        currentWakeLock = await navigator.wakeLock.request();
+      } catch {}
 
       setProgress(0);
       setRate(0);
@@ -132,9 +138,9 @@ export default function ConnectionsProvider({
             );
 
             currentWriter.close();
-            currentWriter = null;
+            // currentWriter = null;
 
-            finishTransfer();
+            await finishTransfer();
           }
         }
       } else {
@@ -163,11 +169,11 @@ export default function ConnectionsProvider({
                 transferId,
               });
 
-              finishTransfer();
+              await finishTransfer();
             },
           });
 
-          startTransfer({
+          await startTransfer({
             transferId,
             targetDevice: originDevice,
             metadata: { id, type, name, size },
@@ -186,7 +192,7 @@ export default function ConnectionsProvider({
   );
 
   const sendFileData = useCallback(
-    (
+    async (
       targetDevice: string,
       metadata: Omit<FileMetadata, "url">,
       blob: Blob,
@@ -217,7 +223,7 @@ export default function ConnectionsProvider({
         }
       }
 
-      finishTransfer();
+      await finishTransfer();
       console.log("File transfer done.");
     },
     [finishTransfer],
@@ -472,7 +478,7 @@ export default function ConnectionsProvider({
       if (!dataChannel)
         throw new Error(`Data channel to ${originDevice} not found.`);
 
-      startTransfer({
+      await startTransfer({
         transferId: v4(),
         targetDevice: originDevice,
         metadata: file,
@@ -516,9 +522,8 @@ export default function ConnectionsProvider({
         transferId: string;
       };
 
-      if (currentTransfer && currentTransfer.id === transferId) {
-        finishTransfer();
-      }
+      if (currentTransfer && currentTransfer.id === transferId)
+        await finishTransfer();
     });
 
     return () => {

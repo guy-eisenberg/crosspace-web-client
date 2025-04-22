@@ -30,7 +30,7 @@ function onActivate(event) {
  * @param {MessageEvent} event
  * @returns {void}
  */
-function onMessage(event) {
+async function onMessage(event) {
   const { data: message } = event;
 
   if (typeof message === "object" && "subject" in message) {
@@ -46,29 +46,25 @@ function onMessage(event) {
 
       const url = `${self.registration.scope}file/${name}?id=${id}`;
 
-      const stream = new ReadableStream({
-        start(controller) {
-          port.postMessage({ subject: "start" });
+      const { readable, writable } = new TransformStream();
+      const writer = writable.getWriter();
 
-          port.onmessage = (event) => {
-            const { data } = event;
+      port.onmessage = async (event) => {
+        const { data } = event;
 
-            if (typeof data === "string") {
-              if (data === "close") {
-                filesMap.delete(id);
+        if (typeof data === "string") {
+          if (data === "close") {
+            // await writable.close();
+            try {
+              await writer.close();
+            } catch {}
 
-                return controller.close();
-              }
-            } else if (data instanceof Uint8Array)
-              return controller.enqueue(data);
-          };
-        },
-        cancel: () => {
-          filesMap.delete(id);
-
-          port.postMessage({ subject: "close" });
-        },
-      });
+            filesMap.delete(id);
+          }
+        } else if (data instanceof Uint8Array) {
+          await writer.write(data);
+        }
+      };
 
       filesMap.set(id, {
         id,
@@ -76,11 +72,13 @@ function onMessage(event) {
         name,
         size,
         port,
-        stream,
+        stream: readable,
       });
 
       port.postMessage({ subject: "download-url", url });
     }
+  } else if (typeof message === "string") {
+    if (message === "ping") return;
   }
 }
 
@@ -98,6 +96,9 @@ function onFetch(event) {
 
     const file = filesMap.get(id);
     if (!file) return null;
+
+    const port = file.port;
+    port.postMessage({ subject: "start" });
 
     const response = new Response(file.stream, {
       headers: {
