@@ -14,7 +14,7 @@ import {
 } from "react";
 import { v4 } from "uuid";
 import { useFiles } from "./FilesContext";
-import { type FileWriter, useSW } from "./SWContext";
+import { useSW } from "./SWContext";
 
 export type RTCConnection = {
   targetDevice: string;
@@ -48,6 +48,9 @@ const ConnectionsContext = createContext<ConnectionsContextState>({
 });
 
 let iceServers: RTCIceServer[] = [];
+let db: IDBDatabase;
+
+const pendingDbChunks: ArrayBuffer[] = [];
 
 const connections: {
   [id: string]: RTCConnection;
@@ -55,14 +58,13 @@ const connections: {
 
 let currentWakeLock: WakeLockSentinel | null = null;
 let currentTransfer: RTCTransfer | null = null;
-let currentWriter: FileWriter | null = null;
 
 export default function ConnectionsProvider({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const { createWriteStream } = useSW();
+  const { downloadFile } = useSW();
   const { getOwnedFile } = useFiles();
 
   const [init, setInit] = useState(false);
@@ -118,14 +120,14 @@ export default function ConnectionsProvider({
   const processMessages = useCallback(
     async (originDevice: string, message: MessageEvent) => {
       if (message.data instanceof ArrayBuffer) {
-        if (
-          currentTransfer &&
-          currentWriter &&
-          currentTransfer.status === "ongoing"
-        ) {
+        if (currentTransfer && currentTransfer.status === "ongoing") {
           const { data } = message;
 
-          currentWriter.write(new Uint8Array(data));
+          pendingDbChunks.push(data);
+
+          // Each 64MB (4096 chunks), save the pending db chunks to disk:
+          if (pendingDbChunks.length >= (64 * 1024 * 1024) / CHUNK_SIZE)
+            await savePendingDbChunks();
 
           currentTransfer.transferedBytes += data.byteLength;
 
@@ -137,8 +139,9 @@ export default function ConnectionsProvider({
               currentTransfer.file.size,
             );
 
-            currentWriter.close();
-            // currentWriter = null;
+            if (pendingDbChunks.length > 0) await savePendingDbChunks();
+
+            downloadFile(currentTransfer.file);
 
             await finishTransfer();
           }
@@ -158,19 +161,12 @@ export default function ConnectionsProvider({
         if (event === "start") {
           const { transferId } = rest as { transferId: string };
 
-          currentWriter = await createWriteStream({
-            id,
-            name,
-            type,
-            size,
-            async onClose() {
-              io().emit("file-transfer-cancel", {
-                targetDevice: originDevice,
-                transferId,
-              });
+          const transaction = db.transaction(["files_chunkes"], "readwrite");
+          const objectStore = transaction.objectStore("files_chunkes");
 
-              await finishTransfer();
-            },
+          const request = objectStore.clear();
+          await new Promise((res) => {
+            request.onsuccess = res;
           });
 
           await startTransfer({
@@ -187,8 +183,38 @@ export default function ConnectionsProvider({
           console.log("Starting reciving file:", id, "of size:", size);
         }
       }
+
+      async function savePendingDbChunks() {
+        const transaction = db.transaction(["files_chunkes"], "readwrite");
+        const objectStore = transaction.objectStore("files_chunkes");
+
+        const totalLength = pendingDbChunks.reduce(
+          (total, chunk) => total + chunk.byteLength,
+          0,
+        );
+
+        const dataArrayBuffer = new ArrayBuffer(totalLength);
+        const dataView = new Uint8Array(dataArrayBuffer);
+
+        const originalLength = pendingDbChunks.length;
+
+        let offset = 0;
+        for (let i = 0; i < originalLength; i++) {
+          const chunk = pendingDbChunks.shift() as ArrayBuffer;
+
+          dataView.set(new Uint8Array(chunk), offset);
+
+          offset += chunk.byteLength;
+        }
+
+        const request = objectStore.put({ data: dataArrayBuffer });
+
+        await new Promise((res) => {
+          request.onsuccess = res;
+        });
+      }
     },
-    [createWriteStream, startTransfer, finishTransfer],
+    [downloadFile, finishTransfer, startTransfer],
   );
 
   const sendFileData = useCallback(
@@ -326,6 +352,12 @@ export default function ConnectionsProvider({
       const res = await api("/get-ice-servers");
       iceServers = (await res.json()) as RTCIceServer[];
 
+      try {
+        db = await initDB();
+      } catch {
+        throw new Error("IndexedDB init fail!");
+      }
+
       io().on("disconnect", () => {
         setState("connecting");
         io().connect();
@@ -334,6 +366,26 @@ export default function ConnectionsProvider({
       io().on("connect", () => {
         if (allConnected()) setState("idle");
         setInit(true);
+      });
+    }
+
+    async function initDB() {
+      const request = indexedDB.open("files_chunkes_db", 1);
+
+      return new Promise<IDBDatabase>((res, rej) => {
+        request.onupgradeneeded = () => {
+          const db = request.result;
+
+          db.createObjectStore("files_chunkes", {
+            autoIncrement: true,
+          });
+        };
+
+        request.onsuccess = () => {
+          res(request.result);
+        };
+
+        request.onerror = rej;
       });
     }
   }, []);

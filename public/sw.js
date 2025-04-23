@@ -42,43 +42,44 @@ async function onMessage(event) {
       "size" in message &&
       "port" in message
     ) {
-      const { id, name, size, port } = message;
+      const { id, name, type, size, port } = message;
 
-      const url = `${self.registration.scope}file/${name}?id=${id}`;
+      const url = `${self.registration.scope}file/${id}`;
 
-      const { readable, writable } = new TransformStream();
-      const writer = writable.getWriter();
+      const db = await initDB();
+      const transaction = db.transaction("files_chunkes", "readonly");
+      const objectStore = transaction.objectStore("files_chunkes");
 
-      port.onmessage = async (event) => {
-        const { data } = event;
+      const stream = new ReadableStream({
+        start(controller) {
+          const request = objectStore.openCursor();
 
-        if (typeof data === "string") {
-          if (data === "close") {
-            // await writable.close();
-            try {
-              await writer.close();
-            } catch {}
+          request.onsuccess = () => {
+            const cursor = request.result;
 
-            filesMap.delete(id);
-          }
-        } else if (data instanceof Uint8Array) {
-          await writer.write(data);
-        }
-      };
+            if (cursor) {
+              const data = cursor.value.data;
+
+              controller.enqueue(new Uint8Array(data));
+
+              cursor.continue();
+            } else controller.close();
+          };
+        },
+      });
 
       filesMap.set(id, {
         id,
         url,
         name,
+        type,
         size,
         port,
-        stream: readable,
+        stream,
       });
 
       port.postMessage({ subject: "download-url", url });
     }
-  } else if (typeof message === "string") {
-    if (message === "ping") return;
   }
 }
 
@@ -90,9 +91,9 @@ async function onMessage(event) {
 function onFetch(event) {
   const { url: requestUrl } = event.request;
 
-  const { pathname, searchParams } = new URL(requestUrl);
+  const { pathname } = new URL(requestUrl);
   if (pathname.startsWith("/file")) {
-    const id = searchParams.get("id");
+    const id = pathname.split("/")[2];
 
     const file = filesMap.get(id);
     if (!file) return null;
@@ -102,16 +103,42 @@ function onFetch(event) {
 
     const response = new Response(file.stream, {
       headers: {
-        "Content-Type": `${file.type}; charset=utf-8`,
+        "Content-Type": `application/octet-stream; charset=utf-8`,
         "Content-Disposition":
           "attachment; filename*=UTF-8''" +
           encodeURIComponent(file.name)
             .replace(/['()]/g, escape)
             .replace(/\*/g, "%2A"),
         "Content-Length": file.size,
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
       },
     });
 
     event.respondWith(response);
   }
+}
+
+/**
+ *
+ * @returns {Promise<IDBDatabase>}
+ */
+async function initDB() {
+  const request = indexedDB.open("files_chunkes_db", 1);
+
+  return new Promise((res, rej) => {
+    request.onupgradeneeded = () => {
+      const db = request.result;
+
+      db.createObjectStore("files_chunkes", {
+        autoIncrement: true,
+      });
+    };
+
+    request.onsuccess = () => {
+      res(request.result);
+    };
+
+    request.onerror = rej;
+  });
 }

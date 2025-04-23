@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  ContextType,
   createContext,
   useCallback,
   useContext,
@@ -15,15 +14,14 @@ export type FileWriter = {
 };
 
 const SWContext = createContext<{
-  createWriteStream: (file: {
+  downloadFile: (file: {
     id: string;
     name: string;
     type: string;
     size: number;
-    onClose: () => Promise<void>;
-  }) => Promise<FileWriter>;
+  }) => void;
 }>({
-  createWriteStream: (() => {}) as any,
+  downloadFile() {},
 });
 
 export default function SWProvider({
@@ -33,101 +31,51 @@ export default function SWProvider({
 }) {
   const [init, setInit] = useState(false);
 
-  const createWriteStream = useCallback(
-    (file: {
-      id: string;
-      name: string;
-      type: string;
-      size: number;
-      onClose: () => Promise<void>;
-    }): ReturnType<ContextType<typeof SWContext>["createWriteStream"]> => {
-      return new Promise((res) => {
-        const { id, name, type, size } = file;
+  const downloadFile = useCallback(
+    (file: { id: string; name: string; type: string; size: number }) => {
+      const { id, name, type, size } = file;
 
-        const messageChannel = new MessageChannel();
+      const messageChannel = new MessageChannel();
 
-        let keepAliveInterval: NodeJS.Timeout;
+      messageChannel.port1.onmessage = async (event) => {
+        const message = event.data as
+          | {
+              subject: "debug";
+              data: string;
+            }
+          | {
+              subject: "download-url";
+              url: string;
+            };
 
-        messageChannel.port1.onmessage = async (event) => {
-          const message = event.data as
-            | {
-                subject: "debug";
-                data: string;
-              }
-            | {
-                subject: "download-url";
-                url: string;
-              }
-            | { subject: "start" }
-            | {
-                subject: "close";
-              };
+        switch (message.subject) {
+          case "debug":
+            console.log(message.data);
 
-          switch (message.subject) {
-            case "debug":
-              console.log(message.data);
+            break;
+          case "download-url":
+            const { url } = message;
 
-              break;
-            case "download-url":
-              const { url } = message;
+            location.href = url;
 
-              location.href = url;
+            break;
+        }
+      };
 
-              break;
-            case "start":
-              const isSafariIOS =
-                /^((?!chrome|android).)*safari/i.test(navigator.userAgent) &&
-                /iPad|iPhone|iPod/.test(navigator.userAgent);
+      if (!navigator.serviceWorker.controller)
+        throw new Error("Service worker controller not found.");
 
-              // 卐 On Safari IOS ימח שמו וזכרו, wait for the user to approve the download first: 卐
-              if (isSafariIOS) {
-                await new Promise<void>((res) => {
-                  window.onfocus = () => {
-                    setTimeout(res, 1000);
-                    window.onfocus = null;
-                  };
-                });
-              }
-
-              keepAliveInterval = setInterval(() => {
-                if (!navigator.serviceWorker.controller)
-                  throw new Error("Service worker controller not found.");
-
-                navigator.serviceWorker.controller.postMessage("ping");
-              }, 5000);
-
-              res({
-                write(data) {
-                  messageChannel.port1.postMessage(data);
-                },
-                close() {
-                  messageChannel.port1.postMessage("close");
-                },
-              });
-              break;
-            case "close":
-              clearInterval(keepAliveInterval);
-
-              file.onClose();
-              break;
-          }
-        };
-
-        if (!navigator.serviceWorker.controller)
-          throw new Error("Service worker controller not found.");
-
-        navigator.serviceWorker.controller.postMessage(
-          {
-            subject: "new-file",
-            id,
-            name,
-            type,
-            size,
-            port: messageChannel.port2,
-          },
-          [messageChannel.port2],
-        );
-      });
+      navigator.serviceWorker.controller.postMessage(
+        {
+          subject: "new-file",
+          id,
+          name,
+          type,
+          size,
+          port: messageChannel.port2,
+        },
+        [messageChannel.port2],
+      );
     },
     [],
   );
@@ -150,9 +98,7 @@ export default function SWProvider({
   if (!init) return null;
 
   return (
-    <SWContext.Provider value={{ createWriteStream }}>
-      {children}
-    </SWContext.Provider>
+    <SWContext.Provider value={{ downloadFile }}>{children}</SWContext.Provider>
   );
 }
 
