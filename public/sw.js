@@ -47,23 +47,47 @@ async function onMessage(event) {
       const url = `${self.registration.scope}file/${id}`;
 
       const db = await initDB();
-      const transaction = db.transaction("files_chunkes", "readonly");
-      const objectStore = transaction.objectStore("files_chunkes");
 
       const stream = new ReadableStream({
         start(controller) {
-          const request = objectStore.openCursor();
+          let started = false;
 
-          request.onsuccess = () => {
-            const cursor = request.result;
+          port.onmessage = (ev) => {
+            const message = ev.data;
 
-            if (cursor) {
-              const data = cursor.value.data;
+            if (message === "stream-start-approve" && !started) {
+              started = true;
 
-              controller.enqueue(new Uint8Array(data));
+              port.postMessage({ subject: "debug", data: "stream-start" });
 
-              cursor.continue();
-            } else controller.close();
+              const transaction = db.transaction("files_chunkes", "readonly");
+              const objectStore = transaction.objectStore("files_chunkes");
+              const request = objectStore.openCursor();
+
+              request.onsuccess = () => {
+                const cursor = request.result;
+
+                if (cursor) {
+                  const data = cursor.value.data;
+
+                  port.postMessage({ subject: "debug", data: "data enqueue" });
+
+                  controller.enqueue(new Uint8Array(data));
+
+                  cursor.continue();
+                } else {
+                  port.postMessage({ subject: "debug", data: "close" });
+
+                  const isSafariIOS =
+                    /^((?!chrome|android).)*safari/i.test(
+                      navigator.userAgent,
+                    ) && /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+                  // For some reason, Safari-IOS thinks he's a big shot, and prefers to close the stream itself:
+                  if (!isSafariIOS) controller.close();
+                }
+              };
+            }
           };
         },
       });
@@ -98,12 +122,9 @@ function onFetch(event) {
     const file = filesMap.get(id);
     if (!file) return null;
 
-    const port = file.port;
-    port.postMessage({ subject: "start" });
-
     const response = new Response(file.stream, {
       headers: {
-        "Content-Type": `application/octet-stream; charset=utf-8`,
+        "Content-Type": "application/octet-stream; charset=utf-8",
         "Content-Disposition":
           "attachment; filename*=UTF-8''" +
           encodeURIComponent(file.name)

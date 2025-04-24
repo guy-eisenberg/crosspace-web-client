@@ -1,5 +1,6 @@
 "use client";
 
+import { isSafariIOS } from "@/utils/isSafariIOS";
 import {
   createContext,
   useCallback,
@@ -57,6 +58,20 @@ export default function SWProvider({
             const { url } = message;
 
             location.href = url;
+
+            if (isSafariIOS()) {
+              window.onblur = () => {
+                window.onfocus = () => {
+                  messageChannel.port1.postMessage("stream-start-approve");
+
+                  window.onfocus = null;
+                };
+
+                window.onblur = null;
+              };
+            } else {
+              messageChannel.port1.postMessage("stream-start-approve");
+            }
 
             break;
         }

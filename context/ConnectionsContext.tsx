@@ -161,18 +161,18 @@ export default function ConnectionsProvider({
         if (event === "start") {
           const { transferId } = rest as { transferId: string };
 
+          await startTransfer({
+            transferId,
+            targetDevice: originDevice,
+            metadata: { id, type, name, size },
+          });
+
           const transaction = db.transaction(["files_chunkes"], "readwrite");
           const objectStore = transaction.objectStore("files_chunkes");
 
           const request = objectStore.clear();
           await new Promise((res) => {
             request.onsuccess = res;
-          });
-
-          await startTransfer({
-            transferId,
-            targetDevice: originDevice,
-            metadata: { id, type, name, size },
           });
 
           io().emit("file-transfer-start", {
