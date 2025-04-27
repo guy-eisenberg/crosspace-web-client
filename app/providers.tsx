@@ -2,7 +2,9 @@
 
 import FilesProvider from "@/context/FilesContext";
 import SWProvider from "@/context/SWContext";
+import { initLogRocket } from "@/utils/initLogRocket";
 import dynamic from "next/dynamic";
+import { useEffect } from "react";
 
 const ConnectionsProvider = dynamic(
   () => import("@/context/ConnectionsContext"),
@@ -14,6 +16,10 @@ export default function RootProviders({
 }: {
   children: React.ReactNode;
 }) {
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") initLogRocket();
+  }, []);
+
   return (
     <SWProvider>
       <FilesProvider>
