@@ -23,10 +23,19 @@ export default function SpacePageContent({ spaceId }: { spaceId: string }) {
   useEffect(() => {
     init();
 
+    io().on("connect", () => {
+      console.log("space connect");
+      init();
+    });
+
     async function init() {
       const response = await io().emitWithAck("join-space", { spaceId });
       setFiles(response.files);
     }
+
+    return () => {
+      io().off("reconnect");
+    };
   }, [spaceId]);
 
   useEffect(() => {

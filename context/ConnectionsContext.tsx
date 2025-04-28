@@ -358,12 +358,17 @@ export default function ConnectionsProvider({
         throw new Error("IndexedDB init fail!");
       }
 
-      io().on("disconnect", () => {
+      io().on("disconnect", (reason) => {
+        console.log("disconnected");
         setState("connecting");
-        io().connect();
+
+        if (reason === "io server disconnect") {
+          io().connect();
+        }
       });
 
       io().on("connect", () => {
+        console.log("connected");
         if (allConnected()) setState("idle");
         setInit(true);
       });
@@ -388,6 +393,11 @@ export default function ConnectionsProvider({
         request.onerror = rej;
       });
     }
+
+    return () => {
+      io().off("connect");
+      io().off("disconnect");
+    };
   }, []);
 
   useEffect(() => {
@@ -580,6 +590,7 @@ export default function ConnectionsProvider({
 
     return () => {
       io().off("file-request");
+      io().off("file-transfer-start");
       io().off("file-transfer-cancel");
     };
   }, [init, getOwnedFile, finishTransfer, startTransfer, sendFileData]);
