@@ -1,6 +1,32 @@
 @import "tailwindcss";
-@plugin "daisyui";
+@plugin './hero.ts';
+
+@source '../node_modules/@heroui/theme/dist/**/*.{js,ts,jsx,tsx}';
+@custom-variant dark (&:is(.dark *));
 
 @utility input {
   @apply text-base;
+}
+
+@layer base {
+  :root {
+    --color-bg: #f9f9f9;
+    --color-primary: #5570ff;
+    --color-secondary: #8f55ff;
+    --color-border: #cccccc;
+  }
+
+  :root[class~="dark"] {
+    --color-bg: #1a1a1a;
+    --color-primary: #e5484d;
+    --color-secondary: #e59248;
+    --color-border: #484848;
+  }
+}
+
+@theme {
+  --color-theme-bg: var(--color-bg);
+  --color-theme-primary: var(--color-primary);
+  --color-theme-secondary: var(--color-secondary);
+  --color-theme-border: var(--color-border);
 }

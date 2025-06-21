@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext } from "react";
 
 export type FilesContextState = {
   addOwnedFile: (id: string, file: File) => void;
-  getOwnedFile: (id: string) => File;
+  getOwnedFile: (id: string) => File | null;
   deleteOwnedFile: (id: string) => void;
 };
 
@@ -25,7 +25,7 @@ export default function FilesProvider({
 
   const getOwnedFile = useCallback((id: string) => {
     const file = ownedFiles[id];
-    if (!file) throw new Error(`File of id ${id} does not exist.`);
+    if (!file) return null;
 
     return file;
   }, []);

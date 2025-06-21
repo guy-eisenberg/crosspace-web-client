@@ -1,178 +1,453 @@
 "use client";
 
-import ConnectQRCode from "@/app/components/ConnectQRCode";
-import ProgressScreen from "@/app/components/ProgressScreen";
+import FileExplorer from "@/app/components/FileExplorer";
+import FileUploader from "@/app/components/FileUploader";
+import TransfersModal from "@/app/space/[id]/TransfersModal";
+import { api } from "@/clients/api";
 import { io } from "@/clients/io";
 import { useConnections } from "@/context/ConnectionsContext";
 import { useFiles } from "@/context/FilesContext";
-import type { FileMetadata } from "@/types";
-import { fileSizeLabel } from "@/utils/fileSizeLabel";
-import { cn } from "@heroui/theme";
-import { IconQrcode } from "@tabler/icons-react";
-import { useEffect, useRef, useState } from "react";
+import type {
+  DeviceMetadata,
+  FileMetadata,
+  RTCTransferState,
+  RTCTrasnfer,
+} from "@/types";
+import { parseUserAgent } from "@/utils/parseUserAgent";
+import { ThumbnailGenerator } from "@/utils/ThumbnailGenerator";
+import {
+  Badge,
+  Button,
+  cn,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@heroui/react";
+import {
+  IconArrowsTransferUpDown,
+  IconDeviceIpad,
+  IconDeviceLaptop,
+  IconDeviceMobile,
+  IconDevices,
+  IconExternalLink,
+  IconPlus,
+  IconQrcode,
+} from "@tabler/icons-react";
+import { useSearchParams } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { DropzoneRef } from "react-dropzone";
 import { v4 } from "uuid";
+import ConnectModal from "./ConnectModal";
+import ShareSpaceModal from "./ShareSpaceModal";
 
 export default function SpacePageContent({ spaceId }: { spaceId: string }) {
-  const { addOwnedFile, deleteOwnedFile } = useFiles();
-  const { state, progress, rate, connectTo } = useConnections();
+  const searchParams = useSearchParams();
 
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [init, setInit] = useState(false);
 
-  const [files, setFiles] = useState<FileMetadata[]>([]);
+  const { addOwnedFile, getOwnedFile, deleteOwnedFile } = useFiles();
+  const {
+    deviceId,
+    connectionStates,
+    transferStates,
+    connectTo,
+    disconnectFrom,
+    requestFileTransfer,
+    startTransfer,
+    deleteTransfer,
+    pauseTransfer,
+    getTransfer,
+  } = useConnections();
+
+  const dropzoneRef = useRef<DropzoneRef>(null);
+
+  const [devices, setDevices] = useState<DeviceMetadata[]>([]);
+  const [files, setFiles] = useState<{ [id: string]: FileMetadata }>({});
+
+  const [shareSpaceModalOpen, setShareSpaceModalOpen] = useState(false);
+  const [connectModalOpen, setConnectModalOpen] = useState(false);
+  const [transfersModalOpen, setTransfersModalOpen] = useState(false);
+
+  const devicesWithState = useMemo(() => {
+    return devices.map((device) => {
+      const state = connectionStates[device.id];
+
+      return {
+        ...device,
+        connected: state === "connected" || device.id === "this",
+      };
+    });
+  }, [devices, connectionStates]);
+
+  const { outTransfers, inTransfers } = useMemo(() => {
+    const outTransfers: (RTCTrasnfer & { state: RTCTransferState })[] = [];
+    const inTransfers: (RTCTrasnfer & { state: RTCTransferState })[] = [];
+
+    for (const [transferId, state] of Object.entries(transferStates)) {
+      const transfer = getTransfer(transferId);
+
+      (transfer as any).state = state;
+
+      if (transfer.type === "in")
+        inTransfers.push(transfer as RTCTrasnfer & { state: RTCTransferState });
+      else if (transfer.type === "out")
+        outTransfers.push(
+          transfer as RTCTrasnfer & { state: RTCTransferState },
+        );
+    }
+
+    return { outTransfers, inTransfers };
+  }, [getTransfer, transferStates]);
 
   useEffect(() => {
     init();
 
-    io().on("connect", () => {
-      console.log("space connect");
-      init();
-    });
-
     async function init() {
-      const response = await io().emitWithAck("join-space", { spaceId });
-      setFiles(response.files);
+      const totp = searchParams.get("totp");
+
+      const res = await api(`/spaces/${spaceId}/join`, {
+        method: "POST",
+        body: JSON.stringify({
+          totp,
+        }),
+      });
+
+      if (res.ok) {
+        const { devices, files } = (await res.json()) as {
+          devices: DeviceMetadata[];
+          files: { [id: string]: FileMetadata };
+        };
+
+        setDevices(devices);
+        setFiles(files);
+
+        setInit(true);
+      } else throw new Error("Failed to init space.");
+    }
+  }, [searchParams, spaceId]);
+
+  useEffect(() => {
+    if (!init) return;
+
+    io().on("devices-changed", onDeviceChange);
+    io().on("files-changed", onFilesChange);
+
+    async function onDeviceChange(message: any) {
+      const { device, event } = message as {
+        device: DeviceMetadata;
+        event: "connect" | "disconnect";
+      };
+
+      console.log("devices-changed", device.id, event);
+
+      if (event === "connect") {
+        await connectTo(device.id);
+
+        setDevices((devices) => {
+          if (!devices.map((d) => d.id).includes(device.id)) {
+            return [...devices, device];
+          }
+
+          return devices;
+        });
+      } else if (event === "disconnect") {
+        disconnectFrom(device.id);
+
+        setDevices((devices) => [...devices]);
+      }
+    }
+
+    async function onFilesChange(message: any) {
+      const { files } = message as {
+        files: { [id: string]: FileMetadata };
+        event: "add" | "delete" | "thumbnails-update";
+      };
+
+      setFiles(files);
     }
 
     return () => {
-      io().off("reconnect");
+      io().off("devices-changed", onDeviceChange);
+      io().off("files-changed", onFilesChange);
     };
-  }, [spaceId]);
+  }, [init, connectTo, disconnectFrom]);
+
+  const transfersCount = outTransfers.length + inTransfers.length;
+  const activeTransfersCount =
+    outTransfers.filter((t) => t.state !== "done").length +
+    inTransfers.filter((t) => t.state !== "done").length;
 
   useEffect(() => {
-    io().on("new-device", async (message) => {
-      const { space, device } = message as {
-        space: string;
-        device: string;
-      };
+    if (transfersCount === 0) setTransfersModalOpen(false);
+  }, [transfersCount]);
 
-      if (space === spaceId) await connectTo(device);
-    });
-
-    return () => {
-      io().off("new-device");
-    };
-  }, [spaceId, connectTo]);
-
-  useEffect(() => {
-    io().on("files-changed", (message) => {
-      const { space, files } = message as {
-        space: string;
-        files: FileMetadata[];
-      };
-
-      if (space === spaceId) setFiles(files);
-    });
-
-    return () => {
-      io().off("files-changed");
-    };
-  }, [spaceId]);
-
-  useEffect(() => {
-    io().on("device-disconnected", () => {});
-
-    return () => {
-      io().off("device-disconnected");
-    };
-  }, [spaceId]);
+  if (!init) return null;
 
   return (
-    <main className="relative flex h-full flex-col gap-8 p-4">
-      <div className="flex flex-col items-center gap-2">
-        <div className="flex gap-2">
-          <input
-            type="file"
-            className="file-input file-input-primary"
-            onChange={(e) => {
-              if (e.target.files) onAddFiles(e.target.files);
-            }}
-            ref={inputRef}
-          />
-          <div className="dropdown dropdown-end md:dropdown-center">
-            <div tabIndex={0} role="button" className="btn">
-              <IconQrcode />
-            </div>
-            <div
-              tabIndex={0}
-              className="dropdown-content card card-sm bg-base-100 z-1 w-64 shadow-md"
-            >
-              <div className="card-body">
-                <ConnectQRCode className="w-full" spaceId={spaceId} />
-              </div>
-            </div>
+    <main className="relative flex h-full flex-col">
+      <div className="bg-theme-bg relative min-h-0 flex-1">
+        {activeTransfersCount > 0 && (
+          <div className="bg-warning-100 border-warning border-b py-2 text-center font-medium">
+            <p>Keep window open until all transfers are done</p>
           </div>
-        </div>
-        <div className="grid w-full grid-cols-2 gap-2 md:grid-cols-5">
-          {files.map((file) => (
-            <div className="card bg-base-300 card-border" key={file.id}>
-              <div className="card-body">
-                <p className="card-title truncate text-sm text-ellipsis">
-                  {file.name}
-                </p>
-                <p className="text-[#888]">{fileSizeLabel(file.size)}</p>
-                <div className="card-actions">
-                  <button
-                    className="btn btn-primary"
-                    onClick={() => requestFile(file)}
-                  >
-                    Download
-                  </button>
-                  <button
-                    className="btn btn-warning"
-                    onClick={() => onFileDelete(file)}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-      {state === "transfer" && (
-        <ProgressScreen
-          className={cn(
-            state === "transfer" ? "opacity-100" : "-z-10 opacity-0",
-          )}
-          progress={progress}
-          rate={rate}
+        )}
+        <FileExplorer
+          className="relative z-10 max-h-full overflow-y-auto"
+          files={Object.values(files)}
+          onDownload={requestFile}
+          onDelete={deleteFile}
         />
-      )}
+        <div className="absolute inset-0">
+          <FileUploader
+            onUpload={onAddFiles}
+            showPrompt={Object.values(files).length === 0}
+            ref={dropzoneRef}
+          />
+        </div>
+
+        <div className="absolute bottom-3 left-3 z-50 flex gap-2">
+          <Button
+            className="bg-theme-secondary rounded-full text-white"
+            onPress={() => {
+              if (dropzoneRef.current) dropzoneRef.current.open();
+            }}
+            isIconOnly
+          >
+            <IconPlus />
+          </Button>
+          {transfersCount > 0 && (
+            <Badge
+              classNames={{
+                badge: "bg-theme-primary text-white",
+              }}
+              content={transfersCount}
+            >
+              <Button
+                className="bg-theme-secondary rounded-full text-white"
+                isIconOnly
+                onPress={() => setTransfersModalOpen(true)}
+              >
+                <IconArrowsTransferUpDown />
+              </Button>
+            </Badge>
+          )}
+        </div>
+
+        <Badge
+          classNames={{
+            base: "absolute bottom-3 z-50 right-3",
+            badge: "bg-theme-primary text-white",
+          }}
+          content={devices.length}
+          placement="top-left"
+        >
+          <Popover placement="top">
+            <PopoverTrigger>
+              <Button
+                className="bg-theme-secondary rounded-full text-white"
+                isIconOnly
+              >
+                <IconDevices />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent>
+              <div className="flex flex-col gap-2 px-1 py-2">
+                {devicesWithState
+                  .sort((a) => {
+                    if (a.id === "this") return -1;
+                    else return 0;
+                  })
+                  .map((device) => {
+                    const agent = parseUserAgent(device.userAgent);
+
+                    const [deviceType] = agent.split("-");
+
+                    const deviceIcon = (() => {
+                      switch (deviceType.split(":")[0]) {
+                        case "Iphone":
+                        case "Android":
+                        case "Mobile":
+                          return <IconDeviceMobile className="h-5 w-6" />;
+                        case "Ipad":
+                        case "Android-Tablet":
+                          return <IconDeviceIpad />;
+                        default:
+                          return <IconDeviceLaptop className="h-6 w-6" />;
+                      }
+                    })();
+
+                    return (
+                      <div className="flex items-center" key={device.id}>
+                        <div
+                          className={cn(
+                            "mr-3 h-2 w-2 rounded-full",
+                            device.connected ? "bg-green-400" : "bg-gray-200",
+                          )}
+                        />
+                        {deviceIcon}
+                        <p className="ml-1">
+                          {agent}
+                          {device.id === "this" && (
+                            <span className="text-gray-400"> This device</span>
+                          )}
+                        </p>
+                      </div>
+                    );
+                  })}
+              </div>
+            </PopoverContent>
+          </Popover>
+        </Badge>
+      </div>
+
+      <div className="flex">
+        <button
+          className="bg-theme-primary/20 border-theme-primary hover:bg-theme-primary/40 flex flex-1 cursor-pointer flex-col items-center justify-center border-t p-2 sm:flex-row sm:gap-2"
+          onClick={() => setShareSpaceModalOpen(true)}
+        >
+          <p className="font-semibold">Share Space</p>
+          <IconQrcode className="h-6 w-6" />
+        </button>
+        <button
+          className="bg-theme-secondary/20 border-theme-secondary hover:bg-theme-secondary/40 flex flex-1 cursor-pointer flex-col items-center justify-center border-t p-2 sm:flex-row sm:gap-2"
+          onClick={() => setConnectModalOpen(true)}
+        >
+          <p className="font-semibold">Connect to another</p>
+          <IconExternalLink className="h-6 w-6" />
+        </button>
+      </div>
+
+      <TransfersModal
+        outTransfers={outTransfers}
+        inTransfers={inTransfers}
+        startTransfer={startTransfer}
+        deleteTransfer={deleteTransfer}
+        pauseTransfer={pauseTransfer}
+        isOpen={transfersModalOpen}
+        onOpenChange={setTransfersModalOpen}
+      />
+
+      <ShareSpaceModal
+        spaceId={spaceId}
+        isOpen={shareSpaceModalOpen}
+        onOpenChange={setShareSpaceModalOpen}
+      />
+
+      <ConnectModal
+        isOpen={connectModalOpen}
+        onOpenChange={setConnectModalOpen}
+      />
     </main>
   );
 
-  async function onAddFiles(files: FileList) {
-    const newFilesData: FileMetadata[] = [];
+  async function onAddFiles(files: File[]) {
+    const newFilesData: { [id: string]: Omit<FileMetadata, "deviceId"> } = {};
+
+    const fileWithThumbnails: (Omit<FileMetadata, "deviceId"> & {
+      blob: File;
+    })[] = [];
 
     for (const file of files) {
-      const id = v4();
-
-      newFilesData.push({
-        id,
+      const fileMetadata = {
+        id: v4(),
+        spaceId,
         name: file.name,
         type: file.type,
         size: file.size,
-        url: URL.createObjectURL(file),
-      });
+      };
 
-      addOwnedFile(id, file);
+      newFilesData[fileMetadata.id] = fileMetadata;
+
+      if (ThumbnailGenerator.getFileType(file) !== "unsupported")
+        fileWithThumbnails.push({ ...fileMetadata, blob: file });
+
+      addOwnedFile(fileMetadata.id, file);
     }
 
-    if (inputRef.current) inputRef.current.value = "";
-
-    await io().emitWithAck("new-files", {
-      space: spaceId,
-      files: newFilesData,
+    await api(`/spaces/${spaceId}/files`, {
+      method: "POST",
+      body: JSON.stringify({ files: Object.values(newFilesData) }),
     });
+
+    await uploadThumbnails();
+
+    async function uploadThumbnails() {
+      const fileIds = fileWithThumbnails.map((f) => f.id);
+
+      const res = await api(`/spaces/${spaceId}/thumbnail-upload-urls`, {
+        method: "POST",
+        body: JSON.stringify({
+          fileIds,
+        }),
+      });
+
+      if (!res.ok)
+        throw new Error("Could not retrieve upload urls for thumbnails!");
+
+      const { urls } = (await res.json()) as { urls: { [id: string]: string } };
+
+      const thumbnailGenerator = new ThumbnailGenerator();
+
+      await Promise.all(
+        fileWithThumbnails.map((file) =>
+          (async () => {
+            const thumbnailBlob = await thumbnailGenerator.generate(file.blob);
+            if (!thumbnailBlob) return;
+
+            try {
+              const uploadUrl = urls[file.id];
+
+              const res = await fetch(uploadUrl, {
+                method: "PUT",
+                body: thumbnailBlob,
+                headers: {
+                  "Content-Type": "image/png",
+                },
+              });
+
+              if (!res.ok)
+                throw new Error(
+                  `Could not upload thumbnail of file "${file.id}"`,
+                );
+            } catch {}
+          })(),
+        ),
+      );
+
+      await api(`/spaces/${spaceId}/update-file-thumbnails`, {
+        method: "POST",
+        body: JSON.stringify({ fileIds }),
+      });
+    }
   }
 
-  async function onFileDelete(file: FileMetadata) {
-    await io().emitWithAck("file-deleted", { space: spaceId, id: file.id });
+  async function deleteFile(file: FileMetadata) {
+    const res = await api(`/spaces/${spaceId}/files`, {
+      method: "DELETE",
+      body: JSON.stringify({ fileIds: [file.id] }),
+    });
 
-    deleteOwnedFile(file.id);
+    if (res.ok) deleteOwnedFile(file.id);
   }
 
-  function requestFile(file: FileMetadata) {
-    io().emit("file-request", { space: spaceId, id: file.id });
+  async function requestFile(file: FileMetadata) {
+    if (file.deviceId === deviceId) {
+      const ownedFile = getOwnedFile(file.id);
+
+      if (ownedFile) {
+        const a = document.createElement("a");
+        a.download = file.name;
+
+        const url = URL.createObjectURL(ownedFile);
+        a.href = url;
+
+        document.body.appendChild(a);
+        a.click();
+      }
+    } else {
+      const transfer = await requestFileTransfer({ file });
+
+      await startTransfer(transfer.id);
+    }
   }
 }

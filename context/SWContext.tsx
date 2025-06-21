@@ -1,5 +1,6 @@
 "use client";
 
+import { RTCTrasnfer } from "@/types";
 import { isSafariIOS } from "@/utils/isSafariIOS";
 import {
   createContext,
@@ -15,12 +16,7 @@ export type FileWriter = {
 };
 
 const SWContext = createContext<{
-  downloadFile: (file: {
-    id: string;
-    name: string;
-    type: string;
-    size: number;
-  }) => void;
+  downloadFile: (transfer: RTCTrasnfer) => void;
 }>({
   downloadFile() {},
 });
@@ -32,68 +28,60 @@ export default function SWProvider({
 }) {
   const [init, setInit] = useState(false);
 
-  const downloadFile = useCallback(
-    (file: { id: string; name: string; type: string; size: number }) => {
-      const { id, name, type, size } = file;
+  const downloadFile = useCallback((transfer: RTCTrasnfer) => {
+    const messageChannel = new MessageChannel();
 
-      const messageChannel = new MessageChannel();
+    messageChannel.port1.onmessage = async (event) => {
+      const message = event.data as
+        | {
+            subject: "debug";
+            data: string;
+          }
+        | {
+            subject: "download-url";
+            url: string;
+          };
 
-      messageChannel.port1.onmessage = async (event) => {
-        const message = event.data as
-          | {
-              subject: "debug";
-              data: string;
-            }
-          | {
-              subject: "download-url";
-              url: string;
-            };
+      switch (message.subject) {
+        case "debug":
+          console.log(message.data);
 
-        switch (message.subject) {
-          case "debug":
-            console.log(message.data);
+          break;
+        case "download-url":
+          const { url } = message;
 
-            break;
-          case "download-url":
-            const { url } = message;
+          location.href = url;
 
-            location.href = url;
+          if (isSafariIOS()) {
+            window.onblur = () => {
+              window.onfocus = () => {
+                messageChannel.port1.postMessage("stream-start-approve");
 
-            if (isSafariIOS()) {
-              window.onblur = () => {
-                window.onfocus = () => {
-                  messageChannel.port1.postMessage("stream-start-approve");
-
-                  window.onfocus = null;
-                };
-
-                window.onblur = null;
+                window.onfocus = null;
               };
-            } else {
-              messageChannel.port1.postMessage("stream-start-approve");
-            }
 
-            break;
-        }
-      };
+              window.onblur = null;
+            };
+          } else {
+            messageChannel.port1.postMessage("stream-start-approve");
+          }
 
-      if (!navigator.serviceWorker.controller)
-        throw new Error("Service worker controller not found.");
+          break;
+      }
+    };
 
-      navigator.serviceWorker.controller.postMessage(
-        {
-          subject: "new-file",
-          id,
-          name,
-          type,
-          size,
-          port: messageChannel.port2,
-        },
-        [messageChannel.port2],
-      );
-    },
-    [],
-  );
+    if (!navigator.serviceWorker.controller)
+      throw new Error("Service worker controller not found.");
+
+    navigator.serviceWorker.controller.postMessage(
+      {
+        subject: "new-transfer",
+        transfer,
+        port: messageChannel.port2,
+      },
+      [messageChannel.port2],
+    );
+  }, []);
 
   useEffect(() => {
     if ("serviceWorker" in navigator) init();

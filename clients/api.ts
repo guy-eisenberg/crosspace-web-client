@@ -5,5 +5,9 @@ export function api(
   return fetch(`${process.env.NEXT_PUBLIC_API_URL}${input}`, {
     ...init,
     credentials: "include",
+    headers: {
+      ...init?.headers,
+      "Content-Type": "application/json",
+    },
   });
 }

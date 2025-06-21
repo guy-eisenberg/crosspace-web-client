@@ -4,6 +4,8 @@ import ConnectionsProvider from "@/context/ConnectionsContext";
 import FilesProvider from "@/context/FilesContext";
 import SWProvider from "@/context/SWContext";
 import { initLogRocket } from "@/utils/initLogRocket";
+import { HeroUIProvider, ToastProvider } from "@heroui/react";
+import { ThemeProvider } from "next-themes";
 import { useEffect } from "react";
 
 export default function RootProviders({
@@ -18,7 +20,12 @@ export default function RootProviders({
   return (
     <SWProvider>
       <FilesProvider>
-        <ConnectionsProvider>{children}</ConnectionsProvider>
+        <ConnectionsProvider>
+          <HeroUIProvider className="h-full w-full">
+            <ToastProvider placement="top-center" />
+            <ThemeProvider attribute="class">{children}</ThemeProvider>
+          </HeroUIProvider>
+        </ConnectionsProvider>
       </FilesProvider>
     </SWProvider>
   );

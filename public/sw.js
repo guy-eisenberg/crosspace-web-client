@@ -6,7 +6,7 @@ self.addEventListener("activate", onActivate);
 self.addEventListener("message", onMessage);
 self.addEventListener("fetch", onFetch);
 
-const filesMap = new Map();
+const contexts = new Map();
 
 /**
  * On service worker install
@@ -35,18 +35,15 @@ async function onMessage(event) {
 
   if (typeof message === "object" && "subject" in message) {
     if (
-      message.subject === "new-file" &&
-      "id" in message &&
-      "name" in message &&
-      "type" in message &&
-      "size" in message &&
+      message.subject === "new-transfer" &&
+      "transfer" in message &&
       "port" in message
     ) {
-      const { id, name, type, size, port } = message;
+      const { transfer, port } = message;
 
-      const url = `${self.registration.scope}file/${id}`;
+      const url = `${self.registration.scope}transfer/${transfer.id}`;
 
-      const db = await initDB();
+      const db = await getDB();
 
       const stream = new ReadableStream({
         start(controller) {
@@ -60,9 +57,16 @@ async function onMessage(event) {
 
               port.postMessage({ subject: "debug", data: "stream-start" });
 
-              const transaction = db.transaction("files_chunkes", "readonly");
-              const objectStore = transaction.objectStore("files_chunkes");
-              const request = objectStore.openCursor();
+              const transaction = db.transaction(OBJECT_STORE_NAME, "readonly");
+              const objectStore = transaction.objectStore(OBJECT_STORE_NAME);
+
+              const keyRange = IDBKeyRange.bound(
+                `${transfer.id}_`,
+                `${transfer.id}_` + "\uffff",
+                false,
+                false,
+              );
+              const request = objectStore.openCursor(keyRange);
 
               request.onsuccess = () => {
                 const cursor = request.result;
@@ -78,13 +82,8 @@ async function onMessage(event) {
                 } else {
                   port.postMessage({ subject: "debug", data: "close" });
 
-                  const isSafariIOS =
-                    /^((?!chrome|android).)*safari/i.test(
-                      navigator.userAgent,
-                    ) && /iPad|iPhone|iPod/.test(navigator.userAgent);
-
-                  // For some reason, Safari-IOS thinks he's a big shot, and prefers to close the stream itself:
-                  if (!isSafariIOS) controller.close();
+                  // For some reason, Safari-IOS < 18.5 thinks he's a big shot, and prefers to close the stream itself:
+                  if (!isIOSSafariBelow18_5()) controller.close();
                 }
               };
             }
@@ -92,15 +91,7 @@ async function onMessage(event) {
         },
       });
 
-      filesMap.set(id, {
-        id,
-        url,
-        name,
-        type,
-        size,
-        port,
-        stream,
-      });
+      contexts.set(transfer.id, { transfer, url, port, stream });
 
       port.postMessage({ subject: "download-url", url });
     }
@@ -116,13 +107,15 @@ function onFetch(event) {
   const { url: requestUrl } = event.request;
 
   const { pathname } = new URL(requestUrl);
-  if (pathname.startsWith("/file")) {
+  if (pathname.startsWith("/transfer")) {
     const id = pathname.split("/")[2];
 
-    const file = filesMap.get(id);
-    if (!file) return null;
+    const context = contexts.get(id);
+    if (!context) return null;
 
-    const response = new Response(file.stream, {
+    const file = context.transfer.file;
+
+    const response = new Response(context.stream, {
       headers: {
         "Content-Type": "application/octet-stream; charset=utf-8",
         "Content-Disposition":
@@ -144,22 +137,40 @@ function onFetch(event) {
  *
  * @returns {Promise<IDBDatabase>}
  */
-async function initDB() {
-  const request = indexedDB.open("files_chunkes_db", 1);
+async function getDB() {
+  const request = indexedDB.open(DB_NAME);
 
   return new Promise((res, rej) => {
-    request.onupgradeneeded = () => {
-      const db = request.result;
-
-      db.createObjectStore("files_chunkes", {
-        autoIncrement: true,
-      });
-    };
-
     request.onsuccess = () => {
       res(request.result);
     };
 
     request.onerror = rej;
   });
+}
+
+const DB_NAME = "transfers_db";
+const OBJECT_STORE_NAME = "transfers_chunks";
+
+function isIOSSafariBelow18_5() {
+  const userAgent = navigator.userAgent;
+
+  // Check if it's iOS device
+  const isIOS = /iPad|iPhone|iPod/.test(userAgent);
+  if (!isIOS) return false;
+
+  // Check if it's Safari (not Chrome or other browsers on iOS)
+  const isSafari =
+    /Safari/.test(userAgent) && !/CriOS|FxiOS|EdgiOS/.test(userAgent);
+  if (!isSafari) return false;
+
+  // Extract iOS version
+  const iosVersionMatch = userAgent.match(/OS (\d+)_(\d+)/);
+  if (!iosVersionMatch) return false;
+
+  const majorVersion = parseInt(iosVersionMatch[1]);
+  const minorVersion = parseInt(iosVersionMatch[2]);
+
+  // iOS version below 18.5
+  return majorVersion < 18 || (majorVersion === 18 && minorVersion < 5);
 }

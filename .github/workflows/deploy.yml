@@ -28,9 +28,9 @@ jobs:
       - name: Deploy to server
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{vars.HOST}}
+          host: ${{vars.SSH_HOST}}
           username: "ubuntu"
-          key: ${{secrets.KEY}}
+          key: ${{secrets.SSH_KEY}}
           port: 22
           source: "./.next/standalone"
           target: "/var/www/crosspace/client"
@@ -40,9 +40,9 @@ jobs:
       - name: Restart the server
         uses: appleboy/ssh-action@v1.2.2
         with:
-          host: ${{vars.HOST}}
+          host: ${{vars.SSH_HOST}}
           username: "ubuntu"
-          key: ${{secrets.KEY}}
+          key: ${{secrets.SSH_KEY}}
           port: 22
           script: |
             sudo docker compose -f /var/www/crosspace/docker-compose.yml restart client
