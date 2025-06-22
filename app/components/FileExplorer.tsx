@@ -24,7 +24,7 @@ export default function FileExplorer({
   return (
     <div
       className={cn(
-        "grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2 p-4 md:grid-cols-[repeat(auto-fill,minmax(200px,1fr))]",
+        "grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2 overflow-x-hidden p-4 md:grid-cols-[repeat(auto-fill,minmax(200px,1fr))]",
         rest.className,
       )}
     >
