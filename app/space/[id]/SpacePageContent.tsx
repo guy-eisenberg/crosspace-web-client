@@ -103,12 +103,12 @@ export default function SpacePageContent({ spaceId }: { spaceId: string }) {
     init();
 
     async function init() {
-      const totp = searchParams.get("totp");
+      const token = searchParams.get("token");
 
       const res = await api(`/spaces/${spaceId}/join`, {
         method: "POST",
         body: JSON.stringify({
-          totp,
+          token,
         }),
       });
 

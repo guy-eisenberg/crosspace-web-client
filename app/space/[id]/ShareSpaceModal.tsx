@@ -1,9 +1,10 @@
 "use client";
 
-import ConnectQRCode from "@/app/components/ConnectQRCode";
+import QRCode from "@/app/components/QRCode";
 import { api } from "@/clients/api";
 import {
   Button,
+  Input,
   Modal,
   ModalBody,
   ModalContent,
@@ -11,17 +12,25 @@ import {
   ModalHeader,
   type ModalProps,
   Progress,
+  Tab,
+  Tabs,
 } from "@heroui/react";
+import { IconCopy } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 
 export default function ShareSpaceModal({
   spaceId,
   ...rest
 }: Omit<ModalProps, "children"> & { spaceId: string }) {
-  const [mode, setMode] = useState<"qr-code" | "otp">("qr-code");
+  const [mode, setMode] = useState<"token" | "otp">("token");
 
-  const [totp, setTOTP] = useState<string | null>(null);
-  const [totpTTL, setTOTPTTL] = useState(0);
+  // const [totp, setTOTP] = useState<string | null>(null);
+  // const [totpTTL, setTOTPTTL] = useState(0);
+
+  const [token, setToken] = useState<string | null>(
+    "https://crosspace.ngrok.app/space/857795ac-22c7-4625-b918-86ecb7557c3e",
+  );
+  const [, setTokenTTL] = useState(0);
 
   const [otp, setOTP] = useState<string | null>(null);
   const [otpTTL, setOTPTTL] = useState(0);
@@ -32,40 +41,39 @@ export default function ShareSpaceModal({
     let requestTimeout: NodeJS.Timeout | null = null;
     let ttlInterval: NodeJS.Timeout | null = null;
 
-    if (mode === "qr-code") fetchTOTP();
+    if (mode === "token") fetchToken();
     else if (mode === "otp") fetchOTP();
+    // if (mode === "qr-code") fetchTOTP();
+    // else if (mode === "otp") fetchOTP();
 
     return () => {
       if (requestTimeout) clearTimeout(requestTimeout);
       if (ttlInterval) clearInterval(ttlInterval);
     };
 
-    async function fetchTOTP() {
-      const res = await api(`/spaces/${spaceId}/totp`);
-
-      if (!res.ok) throw new Error("Couldn't fetch space totp.");
-
-      const { totp, ttl } = (await res.json()) as { totp: string; ttl: number };
-
-      setTOTP(totp);
-      setTOTPTTL(ttl);
-
+    async function fetchToken() {
       if (requestTimeout) clearTimeout(requestTimeout);
       if (ttlInterval) clearInterval(ttlInterval);
 
-      ttlInterval = setInterval(() => {
-        setTOTPTTL((ttl) => {
-          if (ttl > 0) {
-            return ttl - 1;
-          }
+      const res = await api(`/spaces/${spaceId}/token`);
 
-          return ttl;
-        });
-      }, 1000);
-      requestTimeout = setTimeout(fetchTOTP, ttl * 1000);
+      if (!res.ok) throw new Error("Couldn't fetch space token.");
+
+      const { token, ttl } = (await res.json()) as {
+        token: string;
+        ttl: number;
+      };
+
+      setToken(token);
+      setTokenTTL(ttl);
+
+      requestTimeout = setTimeout(fetchOTP, ttl * 1000);
     }
 
     async function fetchOTP() {
+      if (requestTimeout) clearTimeout(requestTimeout);
+      if (ttlInterval) clearInterval(ttlInterval);
+
       const res = await api(`/spaces/${spaceId}/otp`);
 
       if (!res.ok) throw new Error("Couldn't fetch space otp.");
@@ -74,9 +82,6 @@ export default function ShareSpaceModal({
 
       setOTP(otp);
       setOTPTTL(ttl);
-
-      if (requestTimeout) clearTimeout(requestTimeout);
-      if (ttlInterval) clearInterval(ttlInterval);
 
       ttlInterval = setInterval(() => {
         setOTPTTL((ttl) => {
@@ -91,6 +96,8 @@ export default function ShareSpaceModal({
     }
   }, [spaceId, mode, rest.isOpen]);
 
+  const spaceUrl = `${process.env.NEXT_PUBLIC_SITE_URL}/space/${spaceId}?token=${token}`;
+
   return (
     <Modal placement="center" {...rest}>
       <ModalContent>
@@ -98,44 +105,48 @@ export default function ShareSpaceModal({
           <>
             <ModalHeader>Share Space</ModalHeader>
             <ModalBody className="flex flex-col items-center">
-              {mode === "qr-code" && (
-                <>
+              <Tabs
+                className="w-full"
+                selectedKey={mode}
+                onSelectionChange={(mode) => setMode(mode as any)}
+                classNames={{ tabList: "w-full", panel: "w-full" }}
+              >
+                <Tab title="QR-Code / Link" key="token">
                   <div className="flex flex-col items-center gap-2">
                     <p className="text-theme-primary font-semibold">
                       Scan the QR code to connect:
                     </p>
-                    {totp && (
-                      <div className="flex flex-col gap-2">
-                        <ConnectQRCode spaceId={spaceId} totp={totp} />
-                        <Progress
-                          className="w-full"
-                          classNames={{ indicator: "bg-theme-primary" }}
-                          value={((120 - totpTTL) / 120) * 100}
-                          size="sm"
-                        />
-                      </div>
-                    )}
+                    <div className="flex w-full flex-col items-center gap-3">
+                      <QRCode value={spaceUrl} />
+                      <Input
+                        className="w-full"
+                        value={spaceUrl}
+                        type="text"
+                        endContent={
+                          <button
+                            className="cursor-pointer"
+                            onClick={() => {
+                              navigator.clipboard.writeText(spaceUrl);
+                            }}
+                          >
+                            <IconCopy />
+                          </button>
+                        }
+                      />
+                    </div>
                   </div>
-                  <button
-                    className="cursor-pointer"
-                    onClick={() => setMode("otp")}
-                  >
-                    <u>Get a one-time code instead</u>
-                  </button>
-                </>
-              )}
-              {mode === "otp" && (
-                <>
+                </Tab>
+                <Tab title="One-Time Code" key="otp">
                   <div className="flex flex-col items-center gap-2">
                     <p className="text-theme-primary text-center font-semibold">
                       Use this code to connect from other devices:
                     </p>
                     {otp && (
-                      <div className="flex flex-col gap-2">
-                        <p className="flex gap-2 text-5xl">
-                          <span className="font-black">
-                            {otp.slice(0, 3)}-{otp.slice(3, 6)}
-                          </span>
+                      <div className="flex w-full flex-col gap-2">
+                        <p className="flex justify-between text-5xl">
+                          <span className="font-black">{otp.slice(0, 3)}</span>
+                          <span className="font-black">{otp.slice(3, 6)}</span>
+                          <span className="font-black">{otp.slice(6)}</span>
                         </p>
                         <Progress
                           className="w-full"
@@ -146,14 +157,8 @@ export default function ShareSpaceModal({
                       </div>
                     )}
                   </div>
-                  <button
-                    className="cursor-pointer"
-                    onClick={() => setMode("qr-code")}
-                  >
-                    <u>Use a qr-code instead</u>
-                  </button>
-                </>
-              )}
+                </Tab>
+              </Tabs>
             </ModalBody>
             <ModalFooter>
               <Button onPress={onClose}>Close</Button>

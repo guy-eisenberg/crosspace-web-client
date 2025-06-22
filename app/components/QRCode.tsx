@@ -1,30 +1,31 @@
 "use client";
 
 import { useMounted } from "@/hooks/useMounted";
-import QRCode from "react-qr-code";
+import { default as _QRCode } from "react-qr-code";
 
-export default function ConnectQRCode({
-  spaceId,
-  totp,
+export default function QRCode({
+  value,
   ...rest
-}: { spaceId: string; totp: string } & React.HTMLAttributes<HTMLOrSVGElement>) {
+}: {
+  value: string;
+} & React.HTMLAttributes<HTMLOrSVGElement>) {
   const mounted = useMounted();
   if (!mounted) return null;
 
   return (
     <>
-      <QRCode
+      <_QRCode
         {...rest}
         className="h-48 w-48 dark:hidden"
         bgColor="transparent"
-        value={`${process.env.NEXT_PUBLIC_SITE_URL}/space/${spaceId}?totp=${totp}`}
+        value={value}
       />
-      <QRCode
+      <_QRCode
         {...rest}
         className="hidden h-48 w-48 dark:block"
         fgColor="white"
         bgColor="transparent"
-        value={`${process.env.NEXT_PUBLIC_SITE_URL}/space/${spaceId}?totp=${totp}`}
+        value={value}
       />
     </>
   );
